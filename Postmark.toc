@@ -2,6 +2,6 @@
 ## Title: Postmark
 ## Notes: Shows a pending mail icon with total gold incoming from auction house sales (1 hour mail delay).
 ## Author: Frank
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariablesPerCharacter: PostmarkDB
 Postmark.lua
