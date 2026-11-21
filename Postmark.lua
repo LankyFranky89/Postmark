@@ -62,11 +62,6 @@ else
   icon:SetSize(18, 18)
 end
 icon:SetAlpha(0.5)
-local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-hl:SetAllPoints(icon)
-hl:SetTexture(icon:GetTexture())
-if okAtlas and icon:GetAtlas() then pcall(hl.SetAtlas, hl, "ui-hud-minimap-mail-mouseover") end
-hl:SetBlendMode("ADD")
 local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 label:SetPoint("TOP", btn, "BOTTOM", 0, 1)
 label:SetText("")
@@ -105,8 +100,14 @@ local function anchorIcon()
   local real = realMailFrame()
   if real then pcall(copyRealIcon, real) end
   if real then
-    -- sit exactly where WoW Forever's own mail icon shows
-    btn:SetPoint("CENTER", real, "CENTER", 0, 0)
+    local realShowing = (HasNewMail and HasNewMail()) or (real.IsShown and real:IsShown())
+    if realShowing then
+      -- real mail is waiting: sit just to the right of the real envelope
+      btn:SetPoint("LEFT", real, "RIGHT", 2, 0)
+    else
+      -- sit exactly where WoW Forever's own mail icon shows
+      btn:SetPoint("CENTER", real, "CENTER", 0, 0)
+    end
     return
   end
   -- fallback: just under the zone name above the minimap
@@ -133,8 +134,12 @@ local function refresh()
   prune()
   local left = nextArrival()
   label:SetText(left and timeText(left) or "")
-  local realMail = HasNewMail and HasNewMail()
-  if #db.pending > 0 and not realMail then btn:Show() else btn:Hide() end
+  if #db.pending > 0 then
+    anchorIcon()
+    btn:Show()
+  else
+    btn:Hide()
+  end
 end
 
 btn:SetScript("OnEnter", function(self)
@@ -144,9 +149,14 @@ btn:SetScript("OnEnter", function(self)
   GameTooltip:AddLine((est and "~" or "") .. money(sum), 1, 1, 1)
   local left = nextArrival()
   if left then GameTooltip:AddLine("Next mail in " .. timeText(left), 0.9, 0.8, 0.5) end
+  GameTooltip:AddLine("Right-click: sales history", 0.6, 0.6, 0.6)
   GameTooltip:Show()
 end)
 btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+btn:SetScript("OnClick", function(_, button)
+  if button == "RightButton" and PostmarkToggleHistory then PostmarkToggleHistory() end
+end)
 
 
 -- ---------- AH data capture ----------
@@ -166,6 +176,14 @@ end
 local function recordSnapshot(name, price, exact)
   ownerSnapshot[name] = { price = price, exact = exact }
   if exact then
+    local now = time()
+    for _, h in ipairs(db.history) do
+      if h.item == name and not h.exact and h.arrives > now then
+        h.amount = price - floor(price * CUT) + (db.deposits[name] or 0)
+        h.exact = db.deposits[name] ~= nil
+        break
+      end
+    end
     for _, p in ipairs(db.pending) do
       if p.item == name and not p.exact then
         p.amount = price - floor(price * CUT) + (p.deposit or 0)
@@ -285,11 +303,17 @@ local function onSold(item)
   local deposit = postedDeposits[item] or db.deposits[item]
   local price = snap and snap.price or 0
   local amount = price - floor(price * CUT) + (deposit or 0)
+  local now = time()
+  local exact = (snap and snap.exact and deposit ~= nil) or false
   table.insert(db.pending, {
     item = item, amount = amount, deposit = deposit,
-    exact = (snap and snap.exact and deposit ~= nil) or false,
-    arrives = time() + DELAY,
+    exact = exact, soldAt = now, arrives = now + DELAY,
   })
+  table.insert(db.history, 1, {
+    item = item, amount = amount, exact = exact, soldAt = now, arrives = now + DELAY,
+  })
+  while #db.history > 100 do table.remove(db.history) end
+  if PostmarkHistoryFrame and PostmarkHistoryFrame:IsShown() then PostmarkHistoryFrame:Refresh() end
   refresh()
 end
 
@@ -308,6 +332,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     db.pending = db.pending or {}
     db.deposits = db.deposits or {}
     db.prices = db.prices or {}
+    db.history = db.history or {}
     print("|cff88ccffPostmark|r loaded. Type /postmark or /pm (test: /postmark test).")
   elseif not db then return
   elseif event == "PLAYER_ENTERING_WORLD" then
@@ -339,6 +364,113 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
 end)
 
 C_Timer.NewTicker(1, refresh)
+
+
+-- ---------- history window ----------
+local hf = CreateFrame("Frame", "PostmarkHistoryFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+hf:SetSize(380, 340)
+hf:SetPoint("CENTER")
+hf:SetFrameStrata("DIALOG")
+hf:SetMovable(true)
+hf:EnableMouse(true)
+hf:RegisterForDrag("LeftButton")
+hf:SetScript("OnDragStart", hf.StartMoving)
+hf:SetScript("OnDragStop", hf.StopMovingOrSizing)
+hf:SetClampedToScreen(true)
+if hf.SetBackdrop then
+  hf:SetBackdrop({
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    tile = true, tileSize = 32, edgeSize = 24,
+    insets = { left = 6, right = 6, top = 6, bottom = 6 },
+  })
+end
+hf:Hide()
+tinsert(UISpecialFrames, "PostmarkHistoryFrame")
+
+local title = hf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+title:SetPoint("TOP", 0, -14)
+title:SetText("Postmark - AH sales history")
+
+local close = CreateFrame("Button", nil, hf, "UIPanelCloseButton")
+close:SetPoint("TOPRIGHT", -4, -4)
+
+local sf = CreateFrame("ScrollFrame", "PostmarkHistoryScroll", hf, "UIPanelScrollFrameTemplate")
+sf:SetPoint("TOPLEFT", 14, -38)
+sf:SetPoint("BOTTOMRIGHT", -32, 52)
+local content = CreateFrame("Frame", nil, sf)
+content:SetSize(330, 1)
+sf:SetScrollChild(content)
+
+local totalsText = hf:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+totalsText:SetPoint("BOTTOMLEFT", 16, 16)
+totalsText:SetJustifyH("LEFT")
+
+local rows = {}
+local ROW_H = 30
+local function getRow(i)
+  if rows[i] then return rows[i] end
+  local r = CreateFrame("Frame", nil, content)
+  r:SetSize(330, ROW_H)
+  r:SetPoint("TOPLEFT", 0, -(i - 1) * ROW_H)
+  r.name = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  r.name:SetPoint("TOPLEFT", 2, -2)
+  r.name:SetWidth(200); r.name:SetJustifyH("LEFT"); r.name:SetWordWrap(false)
+  r.amount = r:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  r.amount:SetPoint("TOPRIGHT", -2, -2)
+  r.amount:SetJustifyH("RIGHT")
+  r.info = r:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  r.info:SetPoint("TOPLEFT", r.name, "BOTTOMLEFT", 0, -1)
+  r.status = r:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  r.status:SetPoint("TOPRIGHT", r.amount, "BOTTOMRIGHT", 0, -1)
+  rows[i] = r
+  return r
+end
+
+function hf:Refresh()
+  local now = time()
+  local today = date("%Y-%m-%d", now)
+  local todaySum, allSum, todayEst, allEst = 0, 0, false, false
+  for i, h in ipairs(db.history) do
+    local r = getRow(i)
+    r.name:SetText(h.item)
+    r.amount:SetText((h.exact and "" or "~") .. money(h.amount))
+    r.info:SetText(date("%d.%m %H:%M", h.soldAt))
+    if h.arrives > now then
+      r.status:SetText("Pending (" .. timeText(h.arrives - now) .. ")")
+      r.status:SetTextColor(1, 0.82, 0)
+    else
+      r.status:SetText("Arrived")
+      r.status:SetTextColor(0.3, 1, 0.3)
+    end
+    r:Show()
+    allSum = allSum + h.amount
+    if not h.exact then allEst = true end
+    if date("%Y-%m-%d", h.soldAt) == today then
+      todaySum = todaySum + h.amount
+      if not h.exact then todayEst = true end
+    end
+  end
+  for i = #db.history + 1, #rows do rows[i]:Hide() end
+  content:SetHeight(max(#db.history * ROW_H, 1))
+  if #db.history == 0 then
+    totalsText:SetText("No sales recorded yet.")
+  else
+    totalsText:SetText(format("Today: %s%s\nAll time (last %d sales): %s%s",
+      todayEst and "~" or "", money(todaySum), #db.history, allEst and "~" or "", money(allSum)))
+  end
+end
+
+hf:SetScript("OnShow", function(self) self:Refresh() end)
+local acc = 0
+hf:SetScript("OnUpdate", function(self, el)
+  acc = acc + el
+  if acc >= 1 then acc = 0; self:Refresh() end
+end)
+
+function PostmarkToggleHistory()
+  if hf:IsShown() then hf:Hide() else hf:Show() end
+end
 
 -- ---------- slash ----------
 SLASH_POSTMARK1 = "/pm"
@@ -372,6 +504,10 @@ SlashCmdList.POSTMARK = function(msg)
     print("  ghost icon atlas:", tostring(icon:GetAtlas()), "file:", tostring(icon:GetTexture()))
     return
   end
+  if msg == "history" or msg == "h" then
+    PostmarkToggleHistory()
+    return
+  end
   if msg == "clear" then
     wipe(db.pending); refresh()
     print("|cff88ccffPostmark|r: cleared pending sales.")
@@ -384,5 +520,5 @@ SlashCmdList.POSTMARK = function(msg)
   for _, p in ipairs(db.pending) do
     print(format("  %s: %s%s (%d min)", p.item, p.exact and "" or "~", money(p.amount), ceil((p.arrives - now) / 60)))
   end
-  print("  /pm clear - reset the list")
+  print("  /pm history - sales history, /pm clear - reset pending list")
 end
