@@ -1,3 +1,7 @@
+local function Secret(v) -- chat hidden by the game (or faked by /cc secret)
+  if CopyCatFakeSecret and CopyCatFakeSecret > GetTime() then return true end
+  return issecretvalue ~= nil and issecretvalue(v) == true
+end
 -- Postmark: pending AH sale mail tracker for WoW Forever
 local ADDON = ...
 local DELAY = 3600          -- AH sale mail arrives after 1 hour
@@ -338,7 +342,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
   elseif event == "PLAYER_ENTERING_WORLD" then
     anchorIcon(); refresh()
   elseif event == "CHAT_MSG_SYSTEM" then
-    local item = arg1 and (arg1:match(soldPattern)
+    local item = arg1 and not Secret(arg1) and (arg1:match(soldPattern)
       or arg1:match("[Bb]uyer.-auction of%s+(.-)%.?$")
       or arg1:match("[Aa]uction of%s+(.-)%s+has sold%.?$")
       or arg1:match("[Yy]our auction of%s+(.-)%s+sold%.?$"))
@@ -346,7 +350,7 @@ f:SetScript("OnEvent", function(_, event, arg1, arg2)
     if item then onSold(item) end
   elseif event == "AUCTION_HOUSE_SHOW_FORMATTED_NOTIFICATION" or event == "AUCTION_HOUSE_SHOW_NOTIFICATION" then
     local soldEnum = Enum and Enum.AuctionHouseNotification and Enum.AuctionHouseNotification.AuctionSold
-    if soldEnum and arg1 == soldEnum and arg2 then
+    if soldEnum and not Secret(arg1) and not Secret(arg2) and arg1 == soldEnum and arg2 then
       local item = tostring(arg2):match("%[(.-)%]") or tostring(arg2)
       onSold(item)
     end
